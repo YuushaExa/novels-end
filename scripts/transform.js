@@ -79,52 +79,80 @@ async function translateJsonFile(filePath) {
     const data = await fs.readJson(filePath);
     const translatedChapters = [];
     
-    // Process 10 chapters at a time
-    for (let i = 0; i < data.chapters.length; i += 10) {
-      const batch = data.chapters.slice(i, i + 10);
-      
+    // Configure safety settings (lowest possible filtering)
+    const safetySettings = [
+      {
+        category: 'HARM_CATEGORY_HARASSMENT',
+        threshold: 'BLOCK_ONLY_HIGH'
+      },
+      {
+        category: 'HARM_CATEGORY_HATE_SPEECH',
+        threshold: 'BLOCK_ONLY_HIGH'
+      },
+      {
+        category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+        threshold: 'BLOCK_ONLY_HIGH'
+      },
+      {
+        category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+        threshold: 'BLOCK_ONLY_HIGH'
+      }
+    ];
+
+    // Process chapters in batches
+    for (let i = 0; i < data.chapters.length; i++) {
       try {
-        // Translate chapter titles and content
-        for (const chapter of batch) {
-          const titlePrompt = `Translate this Chinese novel chapter title to English. Return ONLY the translation without any explanation: "${chapter.title}"`;
-          const contentPrompt = `Translate this Chinese novel chapter content to English. Return ONLY the translation without any explanation. Keep the original formatting and line breaks:\n\n${chapter.content}`;
-          
-          // Translate title
-          const titleResult = await model.generateContent(titlePrompt);
-          const translatedTitle = (await titleResult.response.text()).trim();
-          
-          // Translate content
-          const contentResult = await model.generateContent(contentPrompt);
-          const translatedContent = (await contentResult.response.text()).trim();
-          
-          // Create simplified chapter object with only translations
-          translatedChapters.push({
-            title: translatedTitle,
-            content: translatedContent
+        const chapter = data.chapters[i];
+        
+        // Add context to help the safety evaluation
+        const context = "This is a literary novel translation. The content is for creative writing purposes only.";
+        
+        const titlePrompt = `${context} Translate this Chinese novel chapter title to English: "${chapter.title}"`;
+        const titleResult = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: titlePrompt }]}],
+          safetySettings
+        });
+        const translatedTitle = (await titleResult.response.text()).trim();
+        
+        // Process content in chunks
+        const contentChunks = chunkContent(chapter.content, 1500);
+        let translatedContent = '';
+        
+        for (const chunk of contentChunks) {
+          const contentPrompt = `${context} Translate this Chinese novel content to English. Keep original formatting:\n\n${chunk}`;
+          const contentResult = await model.generateContent({
+            contents: [{ role: 'user', parts: [{ text: contentPrompt }]}],
+            safetySettings
           });
-          
-          console.log(`Translated chapter: ${chapter.title}`);
+          translatedContent += (await contentResult.response.text()).trim() + "\n";
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
         
-        // Wait 10 seconds between batches to avoid rate limits
-        if (i + 10 < data.chapters.length) {
-          console.log('Waiting 10 seconds before next batch...');
-          await new Promise(resolve => setTimeout(resolve, 10000));
-        }
+        translatedChapters.push({
+          title: translatedTitle,
+          content: translatedContent.trim()
+        });
+        
+        console.log(`Translated chapter ${i+1}/${data.chapters.length}`);
+        
+        // Rate limiting
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
       } catch (error) {
-        console.error(`Error translating batch starting at chapter ${i + 1}:`, error);
-        // Skip this batch but continue with next
-        continue;
+        console.error(`Error on chapter ${i+1}:`, error.message);
+        translatedChapters.push({
+          title: `[Translation Error] ${data.chapters[i].title}`,
+          content: `[Could not translate this chapter due to content restrictions. Please translate manually.]`
+        });
       }
     }
     
-    // Save translated version
+    // Save results
     const translatedFileName = filePath.replace('.json', '-gemini.json');
     await fs.writeJson(translatedFileName, { chapters: translatedChapters }, { spaces: 2 });
-    console.log(`Saved translated version: ${path.basename(translatedFileName)}`);
     
   } catch (error) {
-    console.error(`Error translating file ${path.basename(filePath)}:`, error);
+    console.error('Translation failed:', error);
     throw error;
   }
 }
