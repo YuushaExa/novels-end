@@ -1,6 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const unzipper = require('unzipper');
+const iconv = require('iconv-lite'); // Added for better encoding support
 
 async function processFiles(selectedFiles = []) {
   try {
@@ -10,57 +11,42 @@ async function processFiles(selectedFiles = []) {
     await fs.ensureDir(dataDir);
     await fs.ensureDir(resultDir);
 
-    // First process ZIP files if any exist
+    // Process ZIP files
     const zipFiles = (await fs.readdir(dataDir)).filter(file => file.endsWith('.zip'));
     for (const zipFile of zipFiles) {
       console.log(`Extracting ${zipFile}...`);
       const zipPath = path.join(dataDir, zipFile);
       const zipBaseName = path.basename(zipFile, '.zip');
       
-      // Create a temporary directory for extraction
       const tempExtractDir = path.join(dataDir, `temp_${zipBaseName}`);
       await fs.ensureDir(tempExtractDir);
       
-      // Extract to temporary directory
       await fs.createReadStream(zipPath)
         .pipe(unzipper.Extract({ path: tempExtractDir }))
         .promise();
 
-      // Rename and move extracted TXT files
       const extractedFiles = await fs.readdir(tempExtractDir);
       for (const extractedFile of extractedFiles) {
         if (extractedFile.endsWith('.txt')) {
-          // Remove Chinese characters from filename but keep numbers and basic characters
-const cleanFileName = extractedFile.replace(/[^\d]/g, '').slice(0, 6) + '.txt';
-          const newFileName = `${zipBaseName}_${cleanFileName}`;
           await fs.move(
             path.join(tempExtractDir, extractedFile),
-            path.join(dataDir, newFileName)
+            path.join(dataDir, extractedFile) // Keep original filename
           );
-          console.log(`Renamed ${extractedFile} to ${newFileName}`);
+          console.log(`Extracted ${extractedFile}`);
         }
       }
       
-      // Clean up temporary directory
       await fs.remove(tempExtractDir);
-      console.log(`Finished processing ${zipFile}`);
     }
 
     let allFiles = (await fs.readdir(dataDir)).filter(file => file.endsWith('.txt'));
     
-    // Filter files if specific files are selected
     if (selectedFiles.length > 0) {
-      // Add .txt extension to input files if not present
       const normalizedSelectedFiles = selectedFiles.map(file => 
         file.endsWith('.txt') ? file : `${file}.txt`
       );
       
-      const files = allFiles.filter(file => {
-        // Compare both with and without Chinese characters in filenames
-        const cleanFile = file.replace(/[^\w\d.-]/g, '');
-        return normalizedSelectedFiles.includes(file) || 
-               normalizedSelectedFiles.includes(cleanFile);
-      });
+      const files = allFiles.filter(file => normalizedSelectedFiles.includes(file));
       
       if (files.length === 0) {
         console.log('No matching files found in data directory.');
@@ -84,51 +70,71 @@ const cleanFileName = extractedFile.replace(/[^\d]/g, '').slice(0, 6) + '.txt';
 async function processFileSet(files, dataDir, resultDir) {
   for (const file of files) {
     const filePath = path.join(dataDir, file);
+    const outputFile = path.join(resultDir, `${path.basename(file, '.txt')}.json`);
     
-    // Generate clean output filename (without Chinese characters)
-    const cleanOutputName = file.replace(/[^\w\d.-]/g, '');
-    
-    // Read file as UTF-8 (default)
-    let content = await fs.readFile(filePath, 'utf8');
-    
-    // (Optional) Fallback to binary if UTF-8 fails
-    if (containsMalformedUTF8(content)) {
-      console.warn(`Falling back to binary decoding for ${cleanOutputName}`);
-      const buffer = await fs.readFile(filePath);
-      content = buffer.toString('binary');
-    }
-    
-    // Process chapters
-    const chapters = [];
-    let currentChapter = null;
-    
-    const lines = content.split('\n');
-    for (const line of lines) {
-      if (line.match(/^第\d+章/)) {
-        if (currentChapter) chapters.push(currentChapter);
-        currentChapter = { title: line.trim(), content: [] };
-      } else if (currentChapter) {
-        if (line.trim() || currentChapter.content.length > 0) {
-          currentChapter.content.push(line);
+    try {
+      // Try UTF-8 first
+      let content = await fs.readFile(filePath, 'utf8');
+      
+      if (containsMalformedUTF8(content)) {
+        console.warn(`Falling back to GB18030 decoding for ${file}`);
+        const buffer = await fs.readFile(filePath);
+        content = iconv.decode(buffer, 'gb18030'); // Use proper Chinese encoding
+      }
+
+      const chapters = [];
+      let currentChapter = null;
+      
+      const lines = content.split('\n');
+      for (const line of lines) {
+        if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) { // Improved chapter detection
+          if (currentChapter) chapters.push(currentChapter);
+          currentChapter = { title: line.trim(), content: [] };
+        } else if (currentChapter) {
+          if (line.trim() || currentChapter.content.length > 0) {
+            currentChapter.content.push(line);
+          }
         }
       }
+      
+      if (currentChapter) chapters.push(currentChapter);
+      
+      // Clean chapter content
+      chapters.forEach(chapter => {
+        chapter.content = chapter.content.join('\n').trim();
+        // Remove empty lines at start and end
+        chapter.content = chapter.content.replace(/^\s*\n/, '').replace(/\n\s*$/, '');
+      });
+
+      // Only write if we have valid content
+      if (chapters.length > 0) {
+        await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
+        console.log(`Processed ${file} -> ${path.basename(outputFile)} (${chapters.length} chapters)`);
+      } else {
+        console.warn(`No chapters found in ${file}, skipping`);
+      }
+    } catch (error) {
+      console.error(`Error processing ${file}:`, error);
     }
-    
-    if (currentChapter) chapters.push(currentChapter);
-    
-    chapters.forEach(chapter => {
-      chapter.content = chapter.content.join('\n').trim();
-    });
-    
-    const outputFile = path.join(resultDir, `${path.basename(cleanOutputName, '.txt')}.json`);
-    await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
-    console.log(`Processed ${cleanOutputName} -> ${path.basename(outputFile)}`);
   }
 }
 
 function containsMalformedUTF8(text) {
-  return /�/.test(text);
+  return /�/.test(text) || /[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text);
 }
 
-const selectedFiles = process.argv.slice(2);
-processFiles(selectedFiles);
+// Install required packages if missing
+async function checkDependencies() {
+  try {
+    require.resolve('iconv-lite');
+  } catch {
+    console.log('Installing required dependencies...');
+    const { execSync } = require('child_process');
+    execSync('npm install iconv-lite', { stdio: 'inherit' });
+  }
+}
+
+checkDependencies().then(() => {
+  const selectedFiles = process.argv.slice(2);
+  processFiles(selectedFiles);
+});
