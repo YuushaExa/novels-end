@@ -11,19 +11,18 @@ async function processFiles() {
     
     for (const file of files) {
       const filePath = path.join(dataDir, file);
-      const fileBuffer = await fs.readFile(filePath);
       
-      // Try using TextDecoder (if GB18030 is supported)
-      let content;
-      try {
-        const decoder = new TextDecoder('gb18030');
-        content = decoder.decode(fileBuffer);
-      } catch (e) {
-        console.warn(`GB18030 not supported, falling back to binary (may have incorrect characters)`);
-        content = fileBuffer.toString('binary');
+      // Read file as UTF-8 (default)
+      let content = await fs.readFile(filePath, 'utf8');
+      
+      // (Optional) Fallback to binary if UTF-8 fails (for GB18030 files)
+      if (containsMalformedUTF8(content)) {
+        console.warn(`Falling back to binary decoding for ${file}`);
+        const buffer = await fs.readFile(filePath);
+        content = buffer.toString('binary'); // Simple fallback (not perfect)
       }
       
-      // Rest of the processing remains the same
+      // Process chapters
       const chapters = [];
       let currentChapter = null;
       
@@ -55,6 +54,11 @@ async function processFiles() {
     console.error('Error processing files:', error);
     process.exit(1);
   }
+}
+
+// Helper: Detects if UTF-8 decoding produced malformed characters
+function containsMalformedUTF8(text) {
+  return /�/.test(text); // Checks for replacement character (�)
 }
 
 processFiles();
