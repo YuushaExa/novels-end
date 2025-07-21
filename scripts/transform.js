@@ -1,12 +1,26 @@
 const fs = require('fs-extra');
 const path = require('path');
+const unzipper = require('unzipper');
 
 async function processFiles(selectedFiles = []) {
   try {
     const dataDir = path.join(process.cwd(), 'data');
     const resultDir = path.join(process.cwd(), 'result');
     
+    await fs.ensureDir(dataDir);
     await fs.ensureDir(resultDir);
+
+    // First process ZIP files if any exist
+    const zipFiles = (await fs.readdir(dataDir)).filter(file => file.endsWith('.zip'));
+    for (const zipFile of zipFiles) {
+      console.log(`Extracting ${zipFile}...`);
+      const zipPath = path.join(dataDir, zipFile);
+      await fs.createReadStream(zipPath)
+        .pipe(unzipper.Extract({ path: dataDir }))
+        .promise();
+      console.log(`Extracted ${zipFile}`);
+    }
+
     let allFiles = (await fs.readdir(dataDir)).filter(file => file.endsWith('.txt'));
     
     // Filter files if specific files are selected
