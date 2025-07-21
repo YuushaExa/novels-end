@@ -19,7 +19,7 @@ jobs:
         node-version: '20'
         
     - name: Install dependencies
-      run: npm install fs-extra
+      run: npm install fs-extra iconv-lite
       
     - name: Run transform script
       run: node scripts/transform.js
