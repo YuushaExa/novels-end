@@ -11,15 +11,19 @@ async function processFiles() {
     
     for (const file of files) {
       const filePath = path.join(dataDir, file);
-      
-      // Read file as binary buffer (since Node.js doesn't support GB18030 natively)
       const fileBuffer = await fs.readFile(filePath);
       
-      // Manually decode binary buffer (this is a simple approach)
-      // Note: This may not handle all GB18030 characters perfectly!
-      let content = fileBuffer.toString('binary');
+      // Try using TextDecoder (if GB18030 is supported)
+      let content;
+      try {
+        const decoder = new TextDecoder('gb18030');
+        content = decoder.decode(fileBuffer);
+      } catch (e) {
+        console.warn(`GB18030 not supported, falling back to binary (may have incorrect characters)`);
+        content = fileBuffer.toString('binary');
+      }
       
-      // Process content into chapters
+      // Rest of the processing remains the same
       const chapters = [];
       let currentChapter = null;
       
