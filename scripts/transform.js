@@ -1,5 +1,6 @@
 const fs = require('fs-extra');
 const path = require('path');
+const iconv = require('iconv-lite'); // You'll need to install this package
 
 async function processFiles() {
   try {
@@ -14,7 +15,10 @@ async function processFiles() {
     
     for (const file of files) {
       const filePath = path.join(dataDir, file);
-      const content = await fs.readFile(filePath, 'utf8');
+      
+      // Read file as buffer and decode with GB18030
+      const fileBuffer = await fs.readFile(filePath);
+      const content = iconv.decode(fileBuffer, 'gb18030');
       
       // Process content into chapters
       const chapters = [];
@@ -48,7 +52,7 @@ async function processFiles() {
         chapter.content = chapter.content.join('\n').trim();
       });
       
-      // Write JSON file
+      // Write JSON file (will be in UTF-8)
       const outputFile = path.join(resultDir, `${path.basename(file, '.txt')}.json`);
       await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
       console.log(`Processed ${file} -> ${path.basename(outputFile)}`);
