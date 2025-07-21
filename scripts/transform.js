@@ -31,7 +31,7 @@ async function processFiles(selectedFiles = []) {
       for (const extractedFile of extractedFiles) {
         if (extractedFile.endsWith('.txt')) {
           // Remove Chinese characters from filename but keep numbers and basic characters
-          const cleanFileName = extractedFile.replace(/[^\w\d.-]/g, '');
+const cleanFileName = extractedFile.replace(/[^\d]/g, '').slice(0, 6) + '.txt';
           const newFileName = `${zipBaseName}_${cleanFileName}`;
           await fs.move(
             path.join(tempExtractDir, extractedFile),
