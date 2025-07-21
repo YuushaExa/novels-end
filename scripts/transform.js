@@ -6,30 +6,49 @@ async function processFiles() {
     const dataDir = path.join(process.cwd(), 'data');
     const resultDir = path.join(process.cwd(), 'result');
     
+    // Create result directory if it doesn't exist
     await fs.ensureDir(resultDir);
+    
+    // Get all txt files in data directory
     const files = (await fs.readdir(dataDir)).filter(file => file.endsWith('.txt'));
     
     for (const file of files) {
       const filePath = path.join(dataDir, file);
       const content = await fs.readFile(filePath, 'utf8');
       
-      // Split content by chapter markers (第X章)
-      const chapterSections = content.split(/(第\d+章[^\n]*)/).filter(section => section.trim());
-      
+      // Process content into chapters
       const chapters = [];
-      for (let i = 1; i < chapterSections.length; i += 2) {
-        const title = chapterSections[i].trim();
-        let chapterContent = chapterSections[i+1].trim();
-        
-        // Remove the === separators if they exist
-        chapterContent = chapterContent.replace(/^===+[\s\S]*?===+/gm, '').trim();
-        
-        chapters.push({
-          title,
-          content: chapterContent
-        });
+      let currentChapter = null;
+      
+      const lines = content.split('\n');
+      for (const line of lines) {
+        // Match 第1章, 第2章, etc. (第 followed by numbers followed by 章)
+        if (line.match(/^第\d+章/)) {
+          if (currentChapter) {
+            chapters.push(currentChapter);
+          }
+          currentChapter = {
+            title: line.trim(),
+            content: []
+          };
+        } else if (currentChapter) {
+          if (line.trim() || currentChapter.content.length > 0) {
+            currentChapter.content.push(line);
+          }
+        }
       }
       
+      // Add the last chapter if it exists
+      if (currentChapter) {
+        chapters.push(currentChapter);
+      }
+      
+      // Convert content arrays to strings
+      chapters.forEach(chapter => {
+        chapter.content = chapter.content.join('\n').trim();
+      });
+      
+      // Write JSON file
       const outputFile = path.join(resultDir, `${path.basename(file, '.txt')}.json`);
       await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
       console.log(`Processed ${file} -> ${path.basename(outputFile)}`);
