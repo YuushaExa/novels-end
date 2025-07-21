@@ -86,22 +86,25 @@ async function translateJsonFile(filePath) {
       try {
         // Translate chapter titles and content
         for (const chapter of batch) {
-          const titlePrompt = `Translate this Chinese novel chapter title to English: "${chapter.title}"`;
-          const contentPrompt = `Translate this Chinese novel chapter content to English. Keep the original formatting and line breaks:\n\n${chapter.content}`;
+          const titlePrompt = `Translate this Chinese novel chapter title to English. Return ONLY the translation without any explanation: "${chapter.title}"`;
+          const contentPrompt = `Translate this Chinese novel chapter content to English. Return ONLY the translation without any explanation. Keep the original formatting and line breaks:\n\n${chapter.content}`;
           
           // Translate title
           const titleResult = await model.generateContent(titlePrompt);
-          chapter.translatedTitle = (await titleResult.response.text()).trim();
+          const translatedTitle = (await titleResult.response.text()).trim();
           
           // Translate content
           const contentResult = await model.generateContent(contentPrompt);
-          chapter.translatedContent = (await contentResult.response.text()).trim();
+          const translatedContent = (await contentResult.response.text()).trim();
+          
+          // Create simplified chapter object with only translations
+          translatedChapters.push({
+            title: translatedTitle,
+            content: translatedContent
+          });
           
           console.log(`Translated chapter: ${chapter.title}`);
         }
-        
-        // Add to results
-        translatedChapters.push(...batch);
         
         // Wait 10 seconds between batches to avoid rate limits
         if (i + 10 < data.chapters.length) {
