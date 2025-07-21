@@ -108,7 +108,7 @@ async function processFileSet(files, dataDir, resultDir) {
 
       // Only write if we have valid content
       if (chapters.length > 0) {
-        await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
+await fs.writeJson(outputFile, { chapters });
         console.log(`Processed ${file} -> ${path.basename(outputFile)} (${chapters.length} chapters)`);
       } else {
         console.warn(`No chapters found in ${file}, skipping`);
