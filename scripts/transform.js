@@ -15,10 +15,33 @@ async function processFiles(selectedFiles = []) {
     for (const zipFile of zipFiles) {
       console.log(`Extracting ${zipFile}...`);
       const zipPath = path.join(dataDir, zipFile);
+      const zipBaseName = path.basename(zipFile, '.zip');
+      
+      // Create a temporary directory for extraction
+      const tempExtractDir = path.join(dataDir, `temp_${zipBaseName}`);
+      await fs.ensureDir(tempExtractDir);
+      
+      // Extract to temporary directory
       await fs.createReadStream(zipPath)
-        .pipe(unzipper.Extract({ path: dataDir }))
+        .pipe(unzipper.Extract({ path: tempExtractDir }))
         .promise();
-      console.log(`Extracted ${zipFile}`);
+
+      // Rename and move extracted TXT files
+      const extractedFiles = await fs.readdir(tempExtractDir);
+      for (const extractedFile of extractedFiles) {
+        if (extractedFile.endsWith('.txt')) {
+          const newFileName = `${zipBaseName}_${extractedFile}`;
+          await fs.move(
+            path.join(tempExtractDir, extractedFile),
+            path.join(dataDir, newFileName)
+          );
+          console.log(`Renamed ${extractedFile} to ${newFileName}`);
+        }
+      }
+      
+      // Clean up temporary directory
+      await fs.remove(tempExtractDir);
+      console.log(`Finished processing ${zipFile}`);
     }
 
     let allFiles = (await fs.readdir(dataDir)).filter(file => file.endsWith('.txt'));
