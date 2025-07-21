@@ -30,7 +30,9 @@ async function processFiles(selectedFiles = []) {
       const extractedFiles = await fs.readdir(tempExtractDir);
       for (const extractedFile of extractedFiles) {
         if (extractedFile.endsWith('.txt')) {
-          const newFileName = `${zipBaseName}_${extractedFile}`;
+          // Remove Chinese characters from filename but keep numbers and basic characters
+          const cleanFileName = extractedFile.replace(/[^\w\d.-]/g, '');
+          const newFileName = `${zipBaseName}_${cleanFileName}`;
           await fs.move(
             path.join(tempExtractDir, extractedFile),
             path.join(dataDir, newFileName)
@@ -53,7 +55,12 @@ async function processFiles(selectedFiles = []) {
         file.endsWith('.txt') ? file : `${file}.txt`
       );
       
-      const files = allFiles.filter(file => normalizedSelectedFiles.includes(file));
+      const files = allFiles.filter(file => {
+        // Compare both with and without Chinese characters in filenames
+        const cleanFile = file.replace(/[^\w\d.-]/g, '');
+        return normalizedSelectedFiles.includes(file) || 
+               normalizedSelectedFiles.includes(cleanFile);
+      });
       
       if (files.length === 0) {
         console.log('No matching files found in data directory.');
@@ -78,14 +85,17 @@ async function processFileSet(files, dataDir, resultDir) {
   for (const file of files) {
     const filePath = path.join(dataDir, file);
     
+    // Generate clean output filename (without Chinese characters)
+    const cleanOutputName = file.replace(/[^\w\d.-]/g, '');
+    
     // Read file as UTF-8 (default)
     let content = await fs.readFile(filePath, 'utf8');
     
-    // (Optional) Fallback to binary if UTF-8 fails (for GB18030 files)
+    // (Optional) Fallback to binary if UTF-8 fails
     if (containsMalformedUTF8(content)) {
-      console.warn(`Falling back to binary decoding for ${file}`);
+      console.warn(`Falling back to binary decoding for ${cleanOutputName}`);
       const buffer = await fs.readFile(filePath);
-      content = buffer.toString('binary'); // Simple fallback (not perfect)
+      content = buffer.toString('binary');
     }
     
     // Process chapters
@@ -110,17 +120,15 @@ async function processFileSet(files, dataDir, resultDir) {
       chapter.content = chapter.content.join('\n').trim();
     });
     
-    const outputFile = path.join(resultDir, `${path.basename(file, '.txt')}.json`);
+    const outputFile = path.join(resultDir, `${path.basename(cleanOutputName, '.txt')}.json`);
     await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
-    console.log(`Processed ${file} -> ${path.basename(outputFile)}`);
+    console.log(`Processed ${cleanOutputName} -> ${path.basename(outputFile)}`);
   }
 }
 
-// Helper: Detects if UTF-8 decoding produced malformed characters
 function containsMalformedUTF8(text) {
-  return /�/.test(text); // Checks for replacement character (�)
+  return /�/.test(text);
 }
 
-// Get file names from command line arguments
 const selectedFiles = process.argv.slice(2);
 processFiles(selectedFiles);
