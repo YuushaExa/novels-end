@@ -1,13 +1,23 @@
+/transform.js
 const fs = require('fs-extra');
 const path = require('path');
 
-async function processFiles() {
+async function processFiles(selectedFiles = []) {
   try {
     const dataDir = path.join(process.cwd(), 'data');
     const resultDir = path.join(process.cwd(), 'result');
     
     await fs.ensureDir(resultDir);
-    const files = (await fs.readdir(dataDir)).filter(file => file.endsWith('.txt'));
+    let files = (await fs.readdir(dataDir)).filter(file => file.endsWith('.txt'));
+    
+    // Filter files if specific files are selected
+    if (selectedFiles.length > 0) {
+      files = files.filter(file => selectedFiles.includes(file));
+      if (files.length === 0) {
+        console.log('No matching files found in data directory.');
+        return;
+      }
+    }
     
     for (const file of files) {
       const filePath = path.join(dataDir, file);
@@ -49,7 +59,7 @@ async function processFiles() {
       console.log(`Processed ${file} -> ${path.basename(outputFile)}`);
     }
     
-    console.log('All files processed successfully!');
+    console.log('All selected files processed successfully!');
   } catch (error) {
     console.error('Error processing files:', error);
     process.exit(1);
@@ -61,4 +71,6 @@ function containsMalformedUTF8(text) {
   return /�/.test(text); // Checks for replacement character (�)
 }
 
-processFiles();
+// Get file names from command line arguments
+const selectedFiles = process.argv.slice(2);
+processFiles(selectedFiles);
