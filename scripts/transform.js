@@ -79,71 +79,75 @@ async function translateJsonFile(filePath) {
     const data = await fs.readJson(filePath);
     const translatedChapters = [];
     
-    // Configure safety settings (lowest possible filtering)
+    // Configure model with minimal safety settings
     const safetySettings = [
       {
-        category: 'HARM_CATEGORY_HARASSMENT',
-        threshold: 'BLOCK_ONLY_HIGH'
+        category: "HARM_CATEGORY_HARASSMENT",
+        threshold: "BLOCK_NONE",
       },
       {
-        category: 'HARM_CATEGORY_HATE_SPEECH',
-        threshold: 'BLOCK_ONLY_HIGH'
+        category: "HARM_CATEGORY_HATE_SPEECH",
+        threshold: "BLOCK_NONE",
       },
       {
-        category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-        threshold: 'BLOCK_ONLY_HIGH'
+        category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        threshold: "BLOCK_NONE",
       },
       {
-        category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
-        threshold: 'BLOCK_ONLY_HIGH'
-      }
+        category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+        threshold: "BLOCK_NONE",
+      },
     ];
 
-    // Process chapters in batches
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      safetySettings,
+    });
+
+    // Process chapters one by one with more careful handling
     for (let i = 0; i < data.chapters.length; i++) {
+      const chapter = data.chapters[i];
+      
       try {
-        const chapter = data.chapters[i];
+        // More careful prompt construction
+        const titlePrompt = `Translate this Chinese novel chapter title to English exactly without modification. Return only the translation: "${chapter.title}"`;
         
-        // Add context to help the safety evaluation
-        const context = "This is a literary novel translation. The content is for creative writing purposes only.";
-        
-        const titlePrompt = `${context} Translate this Chinese novel chapter title to English: "${chapter.title}"`;
-        const titleResult = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: titlePrompt }]}],
-          safetySettings
-        });
-        const translatedTitle = (await titleResult.response.text()).trim();
-        
-        // Process content in chunks
-        const contentChunks = chunkContent(chapter.content, 1500);
-        let translatedContent = '';
-        
+        // Break content into smaller chunks if needed
+        const contentChunks = chunkContent(chapter.content, 500);
+        let translatedContent = "";
+
         for (const chunk of contentChunks) {
-          const contentPrompt = `${context} Translate this Chinese novel content to English. Keep original formatting:\n\n${chunk}`;
-          const contentResult = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: contentPrompt }]}],
-            safetySettings
-          });
-          translatedContent += (await contentResult.response.text()).trim() + "\n";
+          const contentPrompt = `Translate this Chinese novel content to English exactly. Maintain original meaning and formatting. Return only the translation:\n\n${chunk}`;
+          
+          const result = await model.generateContent(contentPrompt);
+          const text = (await result.response.text()).trim();
+          translatedContent += text + "\n";
+          
+          // Small delay between chunks
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
-        
+
         translatedChapters.push({
-          title: translatedTitle,
+          title: (await model.generateContent(titlePrompt)).response.text().trim(),
           content: translatedContent.trim()
         });
+
+        console.log(`Translated chapter ${i + 1}/${data.chapters.length}`);
         
-        console.log(`Translated chapter ${i+1}/${data.chapters.length}`);
-        
-        // Rate limiting
+        // Longer delay between chapters
         await new Promise(resolve => setTimeout(resolve, 5000));
-        
+
       } catch (error) {
-        console.error(`Error on chapter ${i+1}:`, error.message);
+        console.error(`Error translating chapter ${i + 1}:`, error);
+        
+        // Fallback: Keep original Chinese with note
         translatedChapters.push({
-          title: `[Translation Error] ${data.chapters[i].title}`,
-          content: `[Could not translate this chapter due to content restrictions. Please translate manually.]`
+          title: `[Translation Blocked] ${chapter.title}`,
+          content: `[Content translation blocked by safety filters]`
         });
+        
+        // Longer delay after error
+        await new Promise(resolve => setTimeout(resolve, 10000));
       }
     }
     
@@ -152,9 +156,17 @@ async function translateJsonFile(filePath) {
     await fs.writeJson(translatedFileName, { chapters: translatedChapters }, { spaces: 2 });
     
   } catch (error) {
-    console.error('Translation failed:', error);
-    throw error;
+    console.error(`Fatal error translating file:`, error);
   }
+}
+
+// Helper to break content into smaller chunks
+function chunkContent(text, maxLength) {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += maxLength) {
+    chunks.push(text.substring(i, i + maxLength));
+  }
+  return chunks;
 }
 
 // Helper: Detects if UTF-8 decoding produced malformed characters
