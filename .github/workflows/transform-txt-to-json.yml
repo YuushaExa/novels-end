@@ -22,7 +22,7 @@ jobs:
         node-version: '20'
         
     - name: Install dependencies
-      run: npm install fs-extra unzipper iconv-lite
+      run: npm install fs-extra unzipper iconv-lite zlib
       
     - name: Run transform script
       run: |
