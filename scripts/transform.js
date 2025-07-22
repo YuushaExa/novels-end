@@ -1,145 +1,89 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { gzipSync, gunzipSync } = require('zlib');
-const unzipper = require('unzipper');
-const iconv = require('iconv-lite');
 
-// 1. Compression Utilities
-async function saveCompressedJson(outputPath, data) {
-  const jsonStr = JSON.stringify(data);
-  const compressed = gzipSync(jsonStr, { level: 9 });
-  await fs.writeFile(outputPath, compressed);
-  
-  const originalSize = Buffer.byteLength(jsonStr, 'utf8');
-  const compressedSize = compressed.length;
-  const ratio = ((compressedSize / originalSize) * 100).toFixed(1);
-  
-  console.log([
-    `✓ ${path.basename(outputPath)}`,
-    `Original: ${(originalSize / 1024).toFixed(2)}KB`,
-    `Compressed: ${(compressedSize / 1024).toFixed(2)}KB`,
-    `Ratio: ${ratio}%`
-  ].join(' | '));
-}
-
-async function readCompressedJson(filePath) {
-  const compressed = await fs.readFile(filePath);
-  return JSON.parse(gunzipSync(compressed).toString('utf8'));
-}
-
-// 2. Core Processing Functions
-async function extractChapters(content) {
-  const chapters = [];
-  let currentChapter = null;
-  
-  const lines = content.split('\n');
-  for (const line of lines) {
-    if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) {
-      if (currentChapter) chapters.push(currentChapter);
-      currentChapter = { 
-        title: line.trim(),
-        content: []
-      };
-    } else if (currentChapter) {
-      currentChapter.content.push(line);
-    }
-  }
-  
-  if (currentChapter) chapters.push(currentChapter);
-  
-  // Clean content
-  return chapters.map(ch => ({
-    title: ch.title,
-    content: ch.content.join('\n')
-      .replace(/^\s+|\s+$/g, '')
-      .replace(/\n{3,}/g, '\n\n')
-  }));
-}
-
-async function processTextFile(filePath, outputPath) {
+async function processFiles(selectedFiles = []) {
   try {
-    // Read with proper encoding
-    let content;
-    try {
-      content = await fs.readFile(filePath, 'utf8');
-      if (containsMalformedUTF8(content)) {
-        throw new Error('UTF-8 decode failed');
-      }
-    } catch {
-      const buffer = await fs.readFile(filePath);
-      content = iconv.decode(buffer, 'gb18030');
-    }
-
-    const chapters = await extractChapters(content);
-    if (chapters.length > 0) {
-      await saveCompressedJson(outputPath, { chapters });
-    } else {
-      console.warn(`⚠ No chapters found in ${path.basename(filePath)}`);
-    }
-  } catch (error) {
-    console.error(`✗ Error processing ${path.basename(filePath)}:`, error.message);
-  }
-}
-
-// 3. File Handling
-async function processZipFiles(dataDir) {
-  const zipFiles = (await fs.readdir(dataDir)).filter(f => f.endsWith('.zip'));
-  
-  for (const zipFile of zipFiles) {
-    const zipPath = path.join(dataDir, zipFile);
-    console.log(`\nExtracting ${zipFile}...`);
+    const dataDir = path.join(process.cwd(), 'data');
+    const resultDir = path.join(process.cwd(), 'result');
     
-    await fs.createReadStream(zipPath)
-      .pipe(unzipper.Extract({ path: dataDir }))
-      .promise();
+    await fs.ensureDir(resultDir);
+    let allFiles = (await fs.readdir(dataDir)).filter(file => file.endsWith('.txt'));
+    
+    // Filter files if specific files are selected
+    if (selectedFiles.length > 0) {
+      // Add .txt extension to input files if not present
+      const normalizedSelectedFiles = selectedFiles.map(file => 
+        file.endsWith('.txt') ? file : `${file}.txt`
+      );
       
-    console.log(`✓ Extracted ${zipFile}`);
+      const files = allFiles.filter(file => normalizedSelectedFiles.includes(file));
+      
+      if (files.length === 0) {
+        console.log('No matching files found in data directory.');
+        return;
+      }
+      
+      console.log(`Processing selected files: ${files.join(', ')}`);
+      await processFileSet(files, dataDir, resultDir);
+    } else {
+      console.log('Processing all files in data directory');
+      await processFileSet(allFiles, dataDir, resultDir);
+    }
+    
+    console.log('Processing completed successfully!');
+  } catch (error) {
+    console.error('Error processing files:', error);
+    process.exit(1);
   }
 }
 
-// 4. Main Execution
-async function main(selectedFiles = []) {
-  const dataDir = path.join(process.cwd(), 'data');
-  const resultDir = path.join(process.cwd(), 'result');
-  
-  await fs.ensureDir(dataDir);
-  await fs.ensureDir(resultDir);
-  
-  // Process ZIP files first
-  await processZipFiles(dataDir);
-  
-  // Get all text files
-  let textFiles = (await fs.readdir(dataDir))
-    .filter(f => f.endsWith('.txt'));
-  
-  // Filter if specific files requested
-  if (selectedFiles.length > 0) {
-    const normalized = selectedFiles.map(f => 
-      f.endsWith('.txt') ? f : `${f}.txt`
-    );
-    textFiles = textFiles.filter(f => normalized.includes(f));
+async function processFileSet(files, dataDir, resultDir) {
+  for (const file of files) {
+    const filePath = path.join(dataDir, file);
+    
+    // Read file as UTF-8 (default)
+    let content = await fs.readFile(filePath, 'utf8');
+    
+    // (Optional) Fallback to binary if UTF-8 fails (for GB18030 files)
+    if (containsMalformedUTF8(content)) {
+      console.warn(`Falling back to binary decoding for ${file}`);
+      const buffer = await fs.readFile(filePath);
+      content = buffer.toString('binary'); // Simple fallback (not perfect)
+    }
+    
+    // Process chapters
+    const chapters = [];
+    let currentChapter = null;
+    
+    const lines = content.split('\n');
+    for (const line of lines) {
+      if (line.match(/^第\d+章/)) {
+        if (currentChapter) chapters.push(currentChapter);
+        currentChapter = { title: line.trim(), content: [] };
+      } else if (currentChapter) {
+        if (line.trim() || currentChapter.content.length > 0) {
+          currentChapter.content.push(line);
+        }
+      }
+    }
+    
+    if (currentChapter) chapters.push(currentChapter);
+    
+    chapters.forEach(chapter => {
+      chapter.content = chapter.content.join('\n').trim();
+    });
+    
+    const outputFile = path.join(resultDir, `${path.basename(file, '.txt')}.json`);
+    await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
+    console.log(`Processed ${file} -> ${path.basename(outputFile)}`);
   }
-  
-  // Process each file
-  console.log('\nStarting compression:');
-  for (const file of textFiles) {
-    await processTextFile(
-      path.join(dataDir, file),
-      path.join(resultDir, `${path.basename(file, '.txt')}.json.gz`)
-    );
-  }
-  
-  console.log('\nProcessing complete!');
 }
 
-// Helper Functions
+// Helper: Detects if UTF-8 decoding produced malformed characters
 function containsMalformedUTF8(text) {
-  return /�/.test(text) || 
-    (/[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text));
+  return /�/.test(text); // Checks for replacement character (�)
 }
 
-// Run
-main(process.argv.slice(2)).catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+// Get file names from command line arguments
+const selectedFiles = process.argv.slice(2);
+processFiles(selectedFiles);
