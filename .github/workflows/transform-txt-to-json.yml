@@ -24,16 +24,16 @@ jobs:
     - name: Install dependencies
       run: npm install fs-extra unzipper iconv-lite
       
-    - name: Run transform script
+    - name: Run transform script (output to hidden folder)
       run: |
-        # Convert comma-separated input to space-separated arguments
+        mkdir -p .output  # Hidden folder
         FILES=$(echo "${{ github.event.inputs.fileNames }}" | tr ',' ' ')
-        node scripts/transform.js $FILES
+        node scripts/transform.js --output-dir .output $FILES
       
-    - name: Commit and push results
+    - name: Commit and push hidden results
       run: |
         git config --global user.name "GitHub Actions"
         git config --global user.email "actions@github.com"
-        git add result/
-        git commit -m "Automated: Transform selected TXT files to JSON" | echo "No changes to commit"
+        git add .output/
+        git commit -m "Automated: Update hidden JSON outputs" || echo "No changes to commit"
         git push
