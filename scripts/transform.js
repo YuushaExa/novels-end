@@ -74,39 +74,39 @@ async function processFileSet(files, dataDir, resultDir) {
     
     try {
       // Try UTF-8 first
-      let content = await fs.readFile(filePath, 'utf8');
+      let c = await fs.readFile(filePath, 'utf8');
       
-      if (containsMalformedUTF8(content)) {
+      if (containsMalformedUTF8(c)) {
         console.warn(`Falling back to GB18030 decoding for ${file}`);
         const buffer = await fs.readFile(filePath);
-        content = iconv.decode(buffer, 'gb18030'); // Use proper Chinese encoding
+        c = iconv.decode(buffer, 'gb18030'); // Use proper Chinese encoding
       }
 
       const chapters = [];
       let currentChapter = null;
       
-      const lines = content.split('\n');
+      const lines = c.split('\n');
       for (const line of lines) {
         if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) { // Improved chapter detection
           if (currentChapter) chapters.push(currentChapter);
-          currentChapter = { title: line.trim(), content: [] };
+          currentChapter = { t: line.trim(), c: [] };
         } else if (currentChapter) {
-          if (line.trim() || currentChapter.content.length > 0) {
-            currentChapter.content.push(line);
+          if (line.trim() || currentChapter.c.length > 0) {
+            currentChapter.c.push(line);
           }
         }
       }
       
       if (currentChapter) chapters.push(currentChapter);
       
-      // Clean chapter content
+      // Clean chapter c
       chapters.forEach(chapter => {
-        chapter.content = chapter.content.join('\n').trim();
+        chapter.c = chapter.c.join('\n').trim();
         // Remove empty lines at start and end
-        chapter.content = chapter.content.replace(/^\s*\n/, '').replace(/\n\s*$/, '');
+        chapter.c = chapter.c.replace(/^\s*\n/, '').replace(/\n\s*$/, '');
       });
 
-      // Only write if we have valid content
+      // Only write if we have valid c
       if (chapters.length > 0) {
 await fs.writeJson(outputFile, { chapters });
         console.log(`Processed ${file} -> ${path.basename(outputFile)} (${chapters.length} chapters)`);
