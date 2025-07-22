@@ -1,17 +1,26 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { gzipSync, gunzipSync } = require('zlib');
 const unzipper = require('unzipper');
 const iconv = require('iconv-lite');
+const { promisify } = require('util');
+const JSZip = require('jszip');
 
-// 1. Compression Utilities
+// 1. Compression Utilities (updated to use ZIP instead of GZIP)
 async function saveCompressedJson(outputPath, data) {
   const jsonStr = JSON.stringify(data);
-  const compressed = gzipSync(jsonStr, { level: 9 });
-  await fs.writeFile(outputPath, compressed);
+  const zip = new JSZip();
+  zip.file('data.json', jsonStr);
+  
+  const zipContent = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 }
+  });
+  
+  await fs.writeFile(outputPath, zipContent);
   
   const originalSize = Buffer.byteLength(jsonStr, 'utf8');
-  const compressedSize = compressed.length;
+  const compressedSize = zipContent.length;
   const ratio = ((compressedSize / originalSize) * 100).toFixed(1);
   
   console.log([
@@ -23,11 +32,13 @@ async function saveCompressedJson(outputPath, data) {
 }
 
 async function readCompressedJson(filePath) {
-  const compressed = await fs.readFile(filePath);
-  return JSON.parse(gunzipSync(compressed).toString('utf8'));
+  const zipData = await fs.readFile(filePath);
+  const zip = await JSZip.loadAsync(zipData);
+  const jsonContent = await zip.file('data.json').async('text');
+  return JSON.parse(jsonContent);
 }
 
-// 2. Core Processing Functions
+// 2. Core Processing Functions (unchanged)
 async function extractChapters(content) {
   const chapters = [];
   let currentChapter = null;
@@ -75,17 +86,13 @@ async function processTextFile(filePath, outputPath) {
       await saveCompressedJson(outputPath, { chapters });
     } else {
       console.warn(`⚠ No chapters found in ${path.basename(filePath)}`);
-
     }
-
-
   } catch (error) {
     console.error(`✗ Error processing ${path.basename(filePath)}:`, error.message);
-
   }
 }
 
-// 3. File Handling
+// 3. File Handling (unchanged)
 async function processZipFiles(dataDir) {
   const zipFiles = (await fs.readdir(dataDir)).filter(f => f.endsWith('.zip'));
   
@@ -96,11 +103,11 @@ async function processZipFiles(dataDir) {
     await fs.createReadStream(zipPath)
       .pipe(unzipper.Extract({ path: dataDir }))
       .promise();
- console.log(`✓ Extracted ${zipFile}`);
- }
+    console.log(`✓ Extracted ${zipFile}`);
+  }
 }
 
-// 4. Main Execution
+// 4. Main Execution (unchanged)
 async function main(selectedFiles = []) {
   const dataDir = path.join(process.cwd(), 'data');
   const resultDir = path.join(process.cwd(), 'result');
@@ -128,14 +135,14 @@ async function main(selectedFiles = []) {
   for (const file of textFiles) {
     await processTextFile(
       path.join(dataDir, file),
-      path.join(resultDir, `${path.basename(file, '.txt')}.json.gz`)
+      path.join(resultDir, `${path.basename(file, '.txt')}.zip`)
     );
   }
   
   console.log('\nProcessing complete!');
 }
 
-// Helper Functions
+// Helper Functions (unchanged)
 function containsMalformedUTF8(text) {
   return /�/.test(text) || 
     (/[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text));
