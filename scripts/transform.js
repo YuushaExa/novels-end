@@ -1,155 +1,203 @@
 const fs = require('fs-extra');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const unzipper = require('unzipper');
 const iconv = require('iconv-lite');
-const { promisify } = require('util');
 const JSZip = require('jszip');
 
-// 1. Compression Utilities (updated to use ZIP instead of GZIP)
-async function saveCompressedJson(outputPath, data) {
-  const jsonStr = JSON.stringify(data);
-  const zip = new JSZip();
-  zip.file('data.json', jsonStr);
-  
-  const zipContent = await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 9 }
-  });
-  
-  await fs.writeFile(outputPath, zipContent);
-  
-  const originalSize = Buffer.byteLength(jsonStr, 'utf8');
-  const compressedSize = zipContent.length;
-  const ratio = ((compressedSize / originalSize) * 100).toFixed(1);
-  
-  console.log([
-    `✓ ${path.basename(outputPath)}`,
-    `Original: ${(originalSize / 1024).toFixed(2)}KB`,
-    `Compressed: ${(compressedSize / 1024).toFixed(2)}KB`,
-    `Ratio: ${ratio}%`
-  ].join(' | '));
-}
+// Configuration
+const CONFIG = {
+  INPUT_DIR: path.join(process.cwd(), 'data'),
+  OUTPUT_DIR: path.join(process.cwd(), 'result'),
+  ZIP_COMPRESSION_LEVEL: 9,
+  ENCODINGS: ['utf8', 'gb18030'],
+  CHAPTER_REGEX: /^第[零一二三四五六七八九十百千万\d]+章/,
+  MAX_CONCURRENT_FILES: 5
+};
 
-async function readCompressedJson(filePath) {
-  const zipData = await fs.readFile(filePath);
-  const zip = await JSZip.loadAsync(zipData);
-  const jsonContent = await zip.file('data.json').async('text');
-  return JSON.parse(jsonContent);
-}
-
-// 2. Core Processing Functions (unchanged)
-async function extractChapters(content) {
-  const chapters = [];
-  let currentChapter = null;
-  
-  const lines = content.split('\n');
-  for (const line of lines) {
-    if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) {
-      if (currentChapter) chapters.push(currentChapter);
-      currentChapter = { 
-        title: line.trim(),
-        content: []
-      };
-    } else if (currentChapter) {
-      currentChapter.content.push(line);
-    }
+// 1. Enhanced Compression Utilities
+class CompressionManager {
+  static async saveAsZip(outputPath, data) {
+    const jsonStr = JSON.stringify(data);
+    const zip = new JSZip();
+    
+    // Measure performance
+    const startTime = process.hrtime.bigint();
+    zip.file('data.json', jsonStr);
+    
+    const zipContent = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: CONFIG.ZIP_COMPRESSION_LEVEL }
+    });
+    
+    await fs.writeFile(outputPath, zipContent);
+    
+    // Calculate metrics
+    const originalSize = Buffer.byteLength(jsonStr, 'utf8');
+    const compressedSize = zipContent.length;
+    const ratio = ((compressedSize / originalSize) * 100).toFixed(1);
+    const elapsedMs = Number(process.hrtime.bigint() - startTime) / 1e6;
+    
+    console.log([
+      `✓ ${path.basename(outputPath)}`,
+      `Size: ${(originalSize / 1024).toFixed(2)}KB → ${(compressedSize / 1024).toFixed(2)}KB`,
+      `Ratio: ${ratio}%`,
+      `Time: ${elapsedMs.toFixed(2)}ms`
+    ].join(' | '));
+    
+    return { originalSize, compressedSize };
   }
-  
-  if (currentChapter) chapters.push(currentChapter);
-  
-  // Clean content
-  return chapters.map(ch => ({
-    title: ch.title,
-    content: ch.content.join('\n')
+
+  static async readZip(filePath) {
+    const zipData = await fs.readFile(filePath);
+    const zip = await JSZip.loadAsync(zipData);
+    const jsonContent = await zip.file('data.json').async('text');
+    return JSON.parse(jsonContent);
+  }
+}
+
+// 2. Optimized Text Processing
+class TextProcessor {
+  static async detectEncoding(buffer) {
+    for (const encoding of CONFIG.ENCODINGS) {
+      try {
+        const decoded = iconv.decode(buffer, encoding);
+        if (!this.containsMalformedText(decoded, encoding)) {
+          return { encoding, content: decoded };
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+    throw new Error('Failed to detect proper encoding');
+  }
+
+  static containsMalformedText(text, encoding) {
+    if (encoding === 'utf8') {
+      return /�/.test(text) || (/[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text));
+    }
+    return false;
+  }
+
+  static async extractChapters(content) {
+    const chapters = [];
+    let currentChapter = null;
+    const lines = content.split('\n');
+
+    for (const line of lines) {
+      if (CONFIG.CHAPTER_REGEX.test(line)) {
+        if (currentChapter) {
+          currentChapter.content = this.cleanContent(currentChapter.content.join('\n'));
+          chapters.push(currentChapter);
+        }
+        currentChapter = { 
+          title: line.trim(),
+          content: []
+        };
+      } else if (currentChapter) {
+        currentChapter.content.push(line);
+      }
+    }
+
+    if (currentChapter) {
+      currentChapter.content = this.cleanContent(currentChapter.content.join('\n'));
+      chapters.push(currentChapter);
+    }
+
+    return chapters;
+  }
+
+  static cleanContent(content) {
+    return content
       .replace(/^\s+|\s+$/g, '')
       .replace(/\n{3,}/g, '\n\n')
-  }));
+      .replace(/\s{2,}/g, ' ');
+  }
 }
 
-async function processTextFile(filePath, outputPath) {
-  try {
-    // Read with proper encoding
-    let content;
-    try {
-      content = await fs.readFile(filePath, 'utf8');
-      if (containsMalformedUTF8(content)) {
-        throw new Error('UTF-8 decode failed');
+// 3. Optimized File Operations
+class FileManager {
+  static async processZipFiles() {
+    const zipFiles = (await fs.readdir(CONFIG.INPUT_DIR))
+      .filter(f => f.endsWith('.zip'));
+    
+    await Promise.all(zipFiles.map(async zipFile => {
+      const zipPath = path.join(CONFIG.INPUT_DIR, zipFile);
+      console.log(`Extracting ${zipFile}...`);
+      
+      try {
+        await pipeline(
+          fs.createReadStream(zipPath),
+          unzipper.Extract({ path: CONFIG.INPUT_DIR })
+        );
+        console.log(`✓ Successfully extracted ${zipFile}`);
+      } catch (error) {
+        console.error(`✗ Failed to extract ${zipFile}:`, error.message);
       }
-    } catch {
-      const buffer = await fs.readFile(filePath);
-      content = iconv.decode(buffer, 'gb18030');
-    }
+    }));
+  }
 
-    const chapters = await extractChapters(content);
-    if (chapters.length > 0) {
-      await saveCompressedJson(outputPath, { chapters });
-    } else {
-      console.warn(`⚠ No chapters found in ${path.basename(filePath)}`);
+  static async processTextFile(file) {
+    const inputPath = path.join(CONFIG.INPUT_DIR, file);
+    const outputPath = path.join(CONFIG.OUTPUT_DIR, `${path.basename(file, '.txt')}.zip`);
+    
+    try {
+      const buffer = await fs.readFile(inputPath);
+      const { content } = await TextProcessor.detectEncoding(buffer);
+      const chapters = await TextProcessor.extractChapters(content);
+      
+      if (chapters.length === 0) {
+        console.warn(`⚠ No chapters found in ${file}`);
+        return;
+      }
+      
+      await CompressionManager.saveAsZip(outputPath, { chapters });
+    } catch (error) {
+      console.error(`✗ Error processing ${file}:`, error.message);
     }
-  } catch (error) {
-    console.error(`✗ Error processing ${path.basename(filePath)}:`, error.message);
+  }
+
+  static async processAllTextFiles(selectedFiles = []) {
+    let textFiles = (await fs.readdir(CONFIG.INPUT_DIR))
+      .filter(f => f.endsWith('.txt'));
+    
+    if (selectedFiles.length > 0) {
+      const normalized = selectedFiles.map(f => 
+        f.endsWith('.txt') ? f : `${f}.txt`
+      );
+      textFiles = textFiles.filter(f => normalized.includes(f));
+    }
+    
+    // Process files in batches to avoid memory issues
+    for (let i = 0; i < textFiles.length; i += CONFIG.MAX_CONCURRENT_FILES) {
+      const batch = textFiles.slice(i, i + CONFIG.MAX_CONCURRENT_FILES);
+      await Promise.all(batch.map(file => this.processTextFile(file)));
+    }
   }
 }
 
-// 3. File Handling (unchanged)
-async function processZipFiles(dataDir) {
-  const zipFiles = (await fs.readdir(dataDir)).filter(f => f.endsWith('.zip'));
-  
-  for (const zipFile of zipFiles) {
-    const zipPath = path.join(dataDir, zipFile);
-    console.log(`\nExtracting ${zipFile}...`);
-
-    await fs.createReadStream(zipPath)
-      .pipe(unzipper.Extract({ path: dataDir }))
-      .promise();
-    console.log(`✓ Extracted ${zipFile}`);
-  }
-}
-
-// 4. Main Execution (unchanged)
+// 4. Main Execution
 async function main(selectedFiles = []) {
-  const dataDir = path.join(process.cwd(), 'data');
-  const resultDir = path.join(process.cwd(), 'result');
-  
-  await fs.ensureDir(dataDir);
-  await fs.ensureDir(resultDir);
-  
-  // Process ZIP files first
-  await processZipFiles(dataDir);
-  
-  // Get all text files
-  let textFiles = (await fs.readdir(dataDir))
-    .filter(f => f.endsWith('.txt'));
-  
-  // Filter if specific files requested
-  if (selectedFiles.length > 0) {
-    const normalized = selectedFiles.map(f => 
-      f.endsWith('.txt') ? f : `${f}.txt`
-    );
-    textFiles = textFiles.filter(f => normalized.includes(f));
+  try {
+    console.time('Total processing time');
+    
+    await fs.ensureDir(CONFIG.INPUT_DIR);
+    await fs.ensureDir(CONFIG.OUTPUT_DIR);
+    
+    console.log('Starting ZIP file extraction...');
+    await FileManager.processZipFiles();
+    
+    console.log('\nStarting text file processing:');
+    await FileManager.processAllTextFiles(selectedFiles);
+    
+    console.timeEnd('Total processing time');
+    console.log('\nProcessing complete!');
+  } catch (error) {
+    console.error('Fatal error:', error);
+    process.exit(1);
   }
-  
-  // Process each file
-  console.log('\nStarting compression:');
-  for (const file of textFiles) {
-    await processTextFile(
-      path.join(dataDir, file),
-      path.join(resultDir, `${path.basename(file, '.txt')}.zip`)
-    );
-  }
-  
-  console.log('\nProcessing complete!');
-}
-
-// Helper Functions (unchanged)
-function containsMalformedUTF8(text) {
-  return /�/.test(text) || 
-    (/[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text));
 }
 
 // Run
-main(process.argv.slice(2)).catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+main(process.argv.slice(2));
