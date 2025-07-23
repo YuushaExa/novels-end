@@ -120,40 +120,30 @@ async function main(selectedFiles = []) {
   await fs.ensureDir(dataDir);
   await fs.ensureDir(resultDir);
   
-  // Process ZIP files first
-  await processZipFiles(dataDir);
+  // Process ZIP files and get the mapping
+  const zipToTxtMap = await processZipFiles(dataDir);
   
-  // Get all zip files and their corresponding txt files
-  const zipFiles = (await fs.readdir(dataDir))
-    .filter(f => f.endsWith('.zip'))
-    .map(zipFile => ({
-      zipName: path.basename(zipFile, '.zip').replace(/_tw$/, ''), // Remove _tw suffix
-      txtName: path.basename(zipFile, '.zip') + '.txt' // Keep original for txt lookup
-    }));
+  // Get all text files
+  let textFiles = (await fs.readdir(dataDir))
+    .filter(f => f.endsWith('.txt'));
   
   // Filter if specific files requested
-  let filesToProcess = zipFiles;
   if (selectedFiles.length > 0) {
     const normalized = selectedFiles.map(f => 
-      f.endsWith('.zip') ? path.basename(f, '.zip').replace(/_tw$/, '') : f.replace(/_tw$/, '')
+      f.endsWith('.txt') ? f : `${f}.txt`
     );
-    filesToProcess = zipFiles.filter(f => normalized.includes(f.zipName));
+    textFiles = textFiles.filter(f => normalized.includes(f));
   }
   
   // Process each file
   console.log('\nStarting compression:');
-  for (const {zipName, txtName} of filesToProcess) {
-    const txtPath = path.join(dataDir, txtName);
-    
-    // Check if txt file exists before processing
-    if (await fs.pathExists(txtPath)) {
-      await processTextFile(
-        txtPath,
-        path.join(resultDir, `${zipName}.json.gz`)
-      );
-    } else {
-      console.warn(`⚠ Text file ${txtName} not found for zip ${zipName}`);
-    }
+  for (const file of textFiles) {
+    // Get the base name from the ZIP file name and remove _tw
+    const baseName = (zipToTxtMap[file] || path.basename(file, '.txt')).replace(/_tw$/, '');
+    await processTextFile(
+      path.join(dataDir, file),
+      path.join(resultDir, `${baseName}.json.gz`)
+    );
   }
   
   console.log('\nProcessing complete!');
