@@ -115,15 +115,15 @@ async function main(selectedFiles = []) {
   const zipFiles = (await fs.readdir(dataDir))
     .filter(f => f.endsWith('.zip'))
     .map(zipFile => ({
-      zipName: path.basename(zipFile, '.zip').replace(/_tw$/, ''), // Remove _tw suffix
-      txtName: path.basename(zipFile, '.zip') + '.txt' // Keep original for txt lookup
+      zipName: path.basename(zipFile, '.zip'),
+      txtName: path.basename(zipFile, '.zip') + '.txt' // Assuming each zip contains one txt with same base name
     }));
   
   // Filter if specific files requested
   let filesToProcess = zipFiles;
   if (selectedFiles.length > 0) {
     const normalized = selectedFiles.map(f => 
-      f.endsWith('.zip') ? path.basename(f, '.zip').replace(/_tw$/, '') : f.replace(/_tw$/, '')
+      f.endsWith('.zip') ? path.basename(f, '.zip') : f
     );
     filesToProcess = zipFiles.filter(f => normalized.includes(f.zipName));
   }
