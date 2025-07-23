@@ -88,16 +88,28 @@ async function processTextFile(filePath, outputPath) {
 // 3. File Handling
 async function processZipFiles(dataDir) {
   const zipFiles = (await fs.readdir(dataDir)).filter(f => f.endsWith('.zip'));
+  const zipToTxtMap = {}; // New: Map ZIP names to extracted TXT names
   
   for (const zipFile of zipFiles) {
     const zipPath = path.join(dataDir, zipFile);
     console.log(`\nExtracting ${zipFile}...`);
 
     await fs.createReadStream(zipPath)
-      .pipe(unzipper.Extract({ path: dataDir }))
+      .pipe(unzipper.Parse())
+      .on('entry', entry => {
+        const fileName = entry.path;
+        if (fileName.endsWith('.txt')) {
+          zipToTxtMap[fileName] = zipFile.replace('.zip', '');
+          entry.pipe(fs.createWriteStream(path.join(dataDir, fileName)));
+        } else {
+          entry.autodrain();
+        }
+      })
       .promise();
- console.log(`✓ Extracted ${zipFile}`);
- }
+    console.log(`✓ Extracted ${zipFile}`);
+  }
+  
+  return zipToTxtMap; // Return the mapping
 }
 
 // 4. Main Execution
@@ -108,8 +120,8 @@ async function main(selectedFiles = []) {
   await fs.ensureDir(dataDir);
   await fs.ensureDir(resultDir);
   
-  // Process ZIP files first
-  await processZipFiles(dataDir);
+  // Process ZIP files and get the mapping
+  const zipToTxtMap = await processZipFiles(dataDir);
   
   // Get all text files
   let textFiles = (await fs.readdir(dataDir))
@@ -126,9 +138,11 @@ async function main(selectedFiles = []) {
   // Process each file
   console.log('\nStarting compression:');
   for (const file of textFiles) {
+    // Get the base name from the ZIP file name and remove _tw
+    const baseName = (zipToTxtMap[file] || path.basename(file, '.txt')).replace(/_tw$/, '');
     await processTextFile(
       path.join(dataDir, file),
-      path.join(resultDir, `${path.basename(file, '.txt')}.json.gz`)
+      path.join(resultDir, `${baseName}.json.gz`)
     );
   }
   
