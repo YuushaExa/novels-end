@@ -96,8 +96,8 @@ async function processZipFiles(dataDir) {
     await fs.createReadStream(zipPath)
       .pipe(unzipper.Extract({ path: dataDir }))
       .promise();
-    console.log(`✓ Extracted ${zipFile}`);
-  }
+ console.log(`✓ Extracted ${zipFile}`);
+ }
 }
 
 // 4. Main Execution
@@ -111,38 +111,38 @@ async function main(selectedFiles = []) {
   // Process ZIP files first
   await processZipFiles(dataDir);
   
-  // Get all zip files and their corresponding txt files
-  const zipFiles = (await fs.readdir(dataDir))
-    .filter(f => f.endsWith('.zip'))
-    .map(zipFile => ({
-      zipName: path.basename(zipFile, '.zip'),
-      txtName: path.basename(zipFile, '.zip') + '.txt' // Assuming each zip contains one txt with same base name
-    }));
+  // Get all text files
+  let textFiles = (await fs.readdir(dataDir))
+    .filter(f => f.endsWith('.txt'));
   
   // Filter if specific files requested
-  let filesToProcess = zipFiles;
   if (selectedFiles.length > 0) {
     const normalized = selectedFiles.map(f => 
-      f.endsWith('.zip') ? path.basename(f, '.zip') : f
+      f.endsWith('.txt') ? f : `${f}.txt`
     );
-    filesToProcess = zipFiles.filter(f => normalized.includes(f.zipName));
+    textFiles = textFiles.filter(f => normalized.includes(f));
   }
   
   // Process each file
   console.log('\nStarting compression:');
-  for (const {zipName, txtName} of filesToProcess) {
-    const txtPath = path.join(dataDir, txtName);
-    
-    // Check if txt file exists before processing
-    if (await fs.pathExists(txtPath)) {
-      await processTextFile(
-        txtPath,
-        path.join(resultDir, `${zipName}.json.gz`)
-      );
-    } else {
-      console.warn(`⚠ Text file ${txtName} not found for zip ${zipName}`);
-    }
+  for (const file of textFiles) {
+    await processTextFile(
+      path.join(dataDir, file),
+      path.join(resultDir, `${path.basename(file, '.txt')}.json.gz`)
+    );
   }
   
   console.log('\nProcessing complete!');
 }
+
+// Helper Functions
+function containsMalformedUTF8(text) {
+  return /�/.test(text) || 
+    (/[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text));
+}
+
+// Run
+main(process.argv.slice(2)).catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});
