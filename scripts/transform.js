@@ -1,7 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const unzipper = require('unzipper');
-const iconv = require('iconv-lite'); // Added for better encoding support
+const iconv = require('iconv-lite');
 
 async function processFiles(selectedFiles = []) {
   try {
@@ -10,6 +10,9 @@ async function processFiles(selectedFiles = []) {
     
     await fs.ensureDir(dataDir);
     await fs.ensureDir(resultDir);
+
+    // Track which zip files contain which txt files
+    const zipToTxtMap = new Map();
 
     // Process ZIP files
     const zipFiles = (await fs.readdir(dataDir)).filter(file => file.endsWith('.zip'));
@@ -26,14 +29,17 @@ async function processFiles(selectedFiles = []) {
         .promise();
 
       const extractedFiles = await fs.readdir(tempExtractDir);
-      for (const extractedFile of extractedFiles) {
-        if (extractedFile.endsWith('.txt')) {
-          await fs.move(
-            path.join(tempExtractDir, extractedFile),
-            path.join(dataDir, extractedFile) // Keep original filename
-          );
-          console.log(`Extracted ${extractedFile}`);
-        }
+      const txtFiles = extractedFiles.filter(file => file.endsWith('.txt'));
+      
+      // Map each txt file to its parent zip
+      for (const txtFile of txtFiles) {
+        const newTxtPath = path.join(dataDir, txtFile);
+        await fs.move(
+          path.join(tempExtractDir, txtFile),
+          newTxtPath
+        );
+        zipToTxtMap.set(txtFile, zipBaseName);
+        console.log(`Extracted ${txtFile} from ${zipFile}`);
       }
       
       await fs.remove(tempExtractDir);
@@ -54,10 +60,10 @@ async function processFiles(selectedFiles = []) {
       }
       
       console.log(`Processing selected files: ${files.join(', ')}`);
-      await processFileSet(files, dataDir, resultDir);
+      await processFileSet(files, dataDir, resultDir, zipToTxtMap);
     } else {
       console.log('Processing all files in data directory');
-      await processFileSet(allFiles, dataDir, resultDir);
+      await processFileSet(allFiles, dataDir, resultDir, zipToTxtMap);
     }
     
     console.log('Processing completed successfully!');
@@ -67,10 +73,13 @@ async function processFiles(selectedFiles = []) {
   }
 }
 
-async function processFileSet(files, dataDir, resultDir) {
+async function processFileSet(files, dataDir, resultDir, zipToTxtMap) {
   for (const file of files) {
     const filePath = path.join(dataDir, file);
-    const outputFile = path.join(resultDir, `${path.basename(file, '.txt')}.json`);
+    
+    // Get the original zip file name (without .zip extension)
+    const zipBaseName = zipToTxtMap.get(file) || path.basename(file, '.txt');
+    const outputFile = path.join(resultDir, `${zipBaseName}.json`);
     
     try {
       // Try UTF-8 first
@@ -79,7 +88,7 @@ async function processFileSet(files, dataDir, resultDir) {
       if (containsMalformedUTF8(content)) {
         console.warn(`Falling back to GB18030 decoding for ${file}`);
         const buffer = await fs.readFile(filePath);
-        content = iconv.decode(buffer, 'gb18030'); // Use proper Chinese encoding
+        content = iconv.decode(buffer, 'gb18030');
       }
 
       const chapters = [];
@@ -87,7 +96,7 @@ async function processFileSet(files, dataDir, resultDir) {
       
       const lines = content.split('\n');
       for (const line of lines) {
-        if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) { // Improved chapter detection
+        if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) {
           if (currentChapter) chapters.push(currentChapter);
           currentChapter = { title: line.trim(), content: [] };
         } else if (currentChapter) {
@@ -102,13 +111,11 @@ async function processFileSet(files, dataDir, resultDir) {
       // Clean chapter content
       chapters.forEach(chapter => {
         chapter.content = chapter.content.join('\n').trim();
-        // Remove empty lines at start and end
         chapter.content = chapter.content.replace(/^\s*\n/, '').replace(/\n\s*$/, '');
       });
 
-      // Only write if we have valid content
       if (chapters.length > 0) {
-await fs.writeJson(outputFile, { chapters });
+        await fs.writeJson(outputFile, { chapters });
         console.log(`Processed ${file} -> ${path.basename(outputFile)} (${chapters.length} chapters)`);
       } else {
         console.warn(`No chapters found in ${file}, skipping`);
@@ -123,7 +130,6 @@ function containsMalformedUTF8(text) {
   return /�/.test(text) || /[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text);
 }
 
-// Install required packages if missing
 async function checkDependencies() {
   try {
     require.resolve('iconv-lite');
