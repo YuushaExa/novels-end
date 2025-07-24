@@ -104,11 +104,37 @@ async function processFileSet(files, dataDir, resultDir) {
         chapter.content = chapter.content.join('\n').trim();
         // Remove empty lines at start and end
         chapter.content = chapter.content.replace(/^\s*\n/, '').replace(/\n\s*$/, '');
+        
+        // Replace Chinese punctuation with English equivalents
+        chapter.content = chapter.content
+          .replace(/，/g, ', ')    // Chinese comma to English comma
+          .replace(/。/g, '. ')    // Chinese period to English period
+          .replace(/；/g, '; ')   // Chinese semicolon to English semicolon
+          .replace(/：/g, ': ')    // Chinese colon to English colon
+          .replace(/！/g, '! ')    // Chinese exclamation to English
+          .replace(/？/g, '? ')    // Chinese question mark to English
+          .replace(/「/g, '"')     // Chinese quotes to English
+          .replace(/」/g, '"')     // Chinese quotes to English
+          .replace(/『/g, '"')     // Chinese quotes to English
+          .replace(/』/g, '"');    // Chinese quotes to English
+          
+        // Also process chapter titles
+        chapter.title = chapter.title
+          .replace(/，/g, ', ')
+          .replace(/。/g, '. ')
+          .replace(/；/g, '; ')
+          .replace(/：/g, ': ')
+          .replace(/！/g, '! ')
+          .replace(/？/g, '? ')
+          .replace(/「/g, '"')
+          .replace(/」/g, '"')
+          .replace(/『/g, '"')
+          .replace(/』/g, '"');
       });
 
       // Only write if we have valid content
       if (chapters.length > 0) {
-await fs.writeJson(outputFile, { chapters });
+        await fs.writeJson(outputFile, { chapters });
         console.log(`Processed ${file} -> ${path.basename(outputFile)} (${chapters.length} chapters)`);
       } else {
         console.warn(`No chapters found in ${file}, skipping`);
