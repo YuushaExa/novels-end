@@ -101,26 +101,31 @@ async function processFileSet(files, dataDir, resultDir) {
       
       // Clean chapter content
       chapters.forEach(chapter => {
+        // Escape content for Hugo templates
         let processedContent = chapter.content.join('\n').trim();
         
-        // First remove all problematic punctuation that might interfere with Hugo
+        // 1. Basic cleaning
         processedContent = processedContent
-          .replace(/[，、；：！？「」『』（）【】]/g, ' ') // Replace all Chinese punctuation with spaces
+          .replace(/[{}]/g, '') // Remove curly braces which Hugo might interpret
+          .replace(/\r?\n/g, ' ') // Convert newlines to spaces
           .replace(/\s+/g, ' ') // Collapse multiple spaces
           .trim();
         
-        // Process title similarly but keep basic punctuation
+        // 2. Escape content for JSON
+        processedContent = JSON.stringify(processedContent).slice(1, -1);
+        
+        // 3. Process title (less aggressively)
         chapter.title = chapter.title
-          .replace(/[，、；：]/g, ' ')
-          .replace(/[！？]/g, ' ')
-          .replace(/\s+/g, ' ')
+          .replace(/[{}]/g, '')
           .trim();
           
         chapter.content = processedContent;
       });
 
       if (chapters.length > 0) {
-        await fs.writeJson(outputFile, { chapters }, { spaces: 2 });
+        // Stringify the entire object to ensure proper escaping
+        const jsonContent = JSON.stringify({ chapters }, null, 2);
+        await fs.writeFile(outputFile, jsonContent);
         console.log(`Processed ${file} -> ${path.basename(outputFile)} (${chapters.length} chapters)`);
       } else {
         console.warn(`No chapters found in ${file}, skipping`);
