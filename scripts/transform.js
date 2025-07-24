@@ -79,7 +79,7 @@ async function processFileSet(files, dataDir, resultDir) {
       if (containsMalformedUTF8(content)) {
         console.warn(`Falling back to GB18030 decoding for ${file}`);
         const buffer = await fs.readFile(filePath);
-        content = iconv.decode(buffer, 'gb18030');
+        content = iconv.decode(buffer, 'gb18030'); // Use proper Chinese encoding
       }
 
       const chapters = [];
@@ -87,7 +87,7 @@ async function processFileSet(files, dataDir, resultDir) {
       
       const lines = content.split('\n');
       for (const line of lines) {
-        if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) {
+        if (line.match(/^第[零一二三四五六七八九十百千万\d]+章/)) { // Improved chapter detection
           if (currentChapter) chapters.push(currentChapter);
           currentChapter = { title: line.trim(), content: [] };
         } else if (currentChapter) {
@@ -101,31 +101,14 @@ async function processFileSet(files, dataDir, resultDir) {
       
       // Clean chapter content
       chapters.forEach(chapter => {
-        // Escape content for Hugo templates
-        let processedContent = chapter.content.join('\n').trim();
-        
-        // 1. Basic cleaning
-        processedContent = processedContent
-          .replace(/[{}]/g, '') // Remove curly braces which Hugo might interpret
-          .replace(/\r?\n/g, ' ') // Convert newlines to spaces
-          .replace(/\s+/g, ' ') // Collapse multiple spaces
-          .trim();
-        
-        // 2. Escape content for JSON
-        processedContent = JSON.stringify(processedContent).slice(1, -1);
-        
-        // 3. Process title (less aggressively)
-        chapter.title = chapter.title
-          .replace(/[{}]/g, '')
-          .trim();
-          
-        chapter.content = processedContent;
+        chapter.content = chapter.content.join('\n').trim();
+        // Remove empty lines at start and end
+        chapter.content = chapter.content.replace(/^\s*\n/, '').replace(/\n\s*$/, '');
       });
 
+      // Only write if we have valid content
       if (chapters.length > 0) {
-        // Stringify the entire object to ensure proper escaping
-        const jsonContent = JSON.stringify({ chapters }, null, 2);
-        await fs.writeFile(outputFile, jsonContent);
+await fs.writeJson(outputFile, { chapters });
         console.log(`Processed ${file} -> ${path.basename(outputFile)} (${chapters.length} chapters)`);
       } else {
         console.warn(`No chapters found in ${file}, skipping`);
