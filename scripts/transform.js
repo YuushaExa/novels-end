@@ -1,153 +1,260 @@
 const fs = require('fs-extra');
 const path = require('path');
+const unzipper = require('unzipper');
 const iconv = require('iconv-lite');
+const chardet = require('chardet');
 
-// Enhanced punctuation standardization mapping
-const PUNCTUATION_MAP = {
-  // Chinese to English punctuation
-  '，': ',',    // Chinese comma
-  '。': '.',    // Chinese period
-  '；': ';',    // Chinese semicolon
-  '：': ':',    // Chinese colon
-  '？': '?',    // Chinese question mark
-  '！': '!',    // Chinese exclamation
-  '“': '"',     // Chinese left double quote
-  '”': '"',     // Chinese right double quote
-  '‘': "'",     // Chinese left single quote
-  '’': "'",     // Chinese right single quote
-  '（': '(',    // Chinese left parenthesis
-  '）': ')',    // Chinese right parenthesis
-  '【': '[',    // Chinese left square bracket
-  '】': ']',    // Chinese right square bracket
-  '、': ',',    // Chinese enumeration comma
-  '《': '"',     // Chinese left title mark
-  '》': '"',     // Chinese right title mark
-  '…': '...',   // Chinese ellipsis
-  // Normalize different space characters
-  '\u00A0': ' ',  // Non-breaking space
-  '\u3000': ' ',  // Ideographic space
-  // Fix common encoding artifacts
-  '�': '',       // Remove replacement characters
-  '\uFEFF': ''   // Remove BOM
+// ======================
+// CONFIGURATION
+// ======================
+const CONFIG = {
+  inputDir: path.join(__dirname, 'data'),
+  outputDir: path.join(__dirname, 'cleaned'),
+  tempDir: path.join(__dirname, 'temp'),
+  encodingFallback: 'gb18030', // Default fallback for Chinese texts
+  maxFileSize: 50 * 1024 * 1024, // 50MB
+  cleanTemp: true
 };
 
-async function cleanAndStandardize(content) {
-  // Step 1: Normalize line endings
-  let cleaned = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  
-  // Step 2: Replace all Chinese punctuation with English equivalents
-  Object.keys(PUNCTUATION_MAP).forEach(chineseChar => {
-    const regex = new RegExp(chineseChar, 'g');
-    cleaned = cleaned.replace(regex, PUNCTUATION_MAP[chineseChar]);
-  });
-  
-  // Step 3: Standardize quotes
-  cleaned = cleaned.replace(/[＂‟ˮ]/g, '"')  // Various double quotes
-                  .replace(/[＇ʹʻʼ]/g, "'"); // Various single quotes
-  
-  // Step 4: Fix common malformed patterns
-  cleaned = cleaned.replace(/,，/g, ',')     // Mixed commas
-                  .replace(/\.\.\.+/g, '...') // Multiple ellipses
-                  .replace(/\s+([.,!?;:])/g, '$1') // Spaces before punctuation
-                  .replace(/([.,!?;:])([^\s])/g, '$1 $2'); // Add space after punctuation
-  
-  // Step 5: Clean paragraph spacing
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n') // Max 2 newlines
-                  .trim();
-  
+// ======================
+// PUNCTUATION STANDARDIZATION
+// ======================
+const PUNCTUATION_MAP = {
+  // Chinese to English
+  '，': ',',    '。': '.',    '；': ';',    '：': ':',    '？': '?',
+  '！': '!',    '“': '"',     '”': '"',     '‘': "'",     '’': "'",
+  '（': '(',    '）': ')',    '【': '[',    '】': ']',    '、': ',',
+  '《': '"',     '》': '"',    '…': '...',   '—': '-',     '～': '~',
+  // Whitespace normalization
+  '\u00A0': ' ', '\u200B': ' ', '\u3000': ' ', '\uFEFF': '',
+  // Common artifacts
+  '�': '',     '\uFFFD': '',   '\uFFFF': '',   '﻿': ''
+};
+
+// ======================
+// CORE FUNCTIONS
+// ======================
+
+/**
+ * Standardizes all punctuation and cleans text
+ */
+async function cleanText(content) {
+  let cleaned = content
+    // Normalize line endings first
+    .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    // Replace all mapped punctuation
+    .replace(new RegExp(`[${Object.keys(PUNCTUATION_MAP).join('')}]`, 'g'), 
+      match => PUNCTUATION_MAP[match]);
+
+  // Fix common patterns
+  cleaned = cleaned
+    .replace(/,，/g, ',')
+    .replace(/\.\.\.+/g, '...')
+    .replace(/\s+([.,!?;:])/g, '$1')
+    .replace(/([.,!?;:])([^\s"])/g, '$1 $2')
+    .replace(/(["'])\s+(.+?)\s+\1/g, '$1$2$1') // Fix spaced quotes
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
   return cleaned;
 }
 
-async function processFileSet(files, dataDir, resultDir) {
-  for (const file of files) {
-    const filePath = path.join(dataDir, file);
-    const outputFile = path.join(resultDir, `${path.basename(file, path.extname(file))}_cleaned.json`);
-    
-    try {
-      // Read with proper encoding handling
-      let content;
-      try {
-        content = await fs.readFile(filePath, 'utf8');
-        if (containsMalformedUTF8(content)) {
-          throw new Error('Malformed UTF-8 detected');
-        }
-      } catch (e) {
-        const buffer = await fs.readFile(filePath);
-        content = iconv.decode(buffer, 'gb18030');
-      }
+/**
+ * Detects file encoding and reads content
+ */
+async function readFileSafely(filePath) {
+  const stats = await fs.stat(filePath);
+  if (stats.size > CONFIG.maxFileSize) {
+    throw new Error(`File too large (${stats.size} bytes > ${CONFIG.maxFileSize} limit)`);
+  }
 
-      // Clean content before JSON processing
-      content = await cleanAndStandardize(content);
+  const buffer = await fs.readFile(filePath);
+  const detectedEncoding = chardet.detect(buffer) || 'utf8';
+  
+  try {
+    // Try detected encoding first
+    let content = iconv.decode(buffer, detectedEncoding);
+    if (containsMalformedText(content)) {
+      throw new Error('Malformed text detected');
+    }
+    return content;
+  } catch (e) {
+    // Fallback to configured encoding
+    return iconv.decode(buffer, CONFIG.encodingFallback);
+  }
+}
+
+/**
+ * Processes a single novel file
+ */
+async function processNovelFile(filePath) {
+  try {
+    const content = await readFileSafely(filePath);
+    const cleaned = await cleanText(content);
+    
+    // Extract chapters (customize this for your format)
+    const chapters = [];
+    const chapterRegex = /^(第[零一二三四五六七八九十百千万\d]+章\s*.+)$/gm;
+    let match;
+    
+    while ((match = chapterRegex.exec(cleaned)) !== null) {
+      const title = match[1].trim();
+      const startPos = match.index + match[0].length;
+      const nextMatch = chapterRegex.exec(cleaned);
+      const endPos = nextMatch ? nextMatch.index : cleaned.length;
       
-      // Parse chapters (adjust this to match your actual structure)
-      const chapters = [];
-      const chapterRegex = /^(第[零一二三四五六七八九十百千万\d]+章\s*.+)$/gm;
-      let match;
-      
-      while ((match = chapterRegex.exec(content)) !== null) {
-        const chapterTitle = match[1].trim();
-        const chapterStart = match.index + match[0].length;
-        const nextMatch = chapterRegex.exec(content);
-        const chapterEnd = nextMatch ? nextMatch.index : content.length;
-        
-        chapters.push({
-          title: chapterTitle,
-          content: content.slice(chapterStart, chapterEnd).trim()
-        });
-        
-        chapterRegex.lastIndex = chapterEnd;
-      }
-      
-      // Additional cleaning for each chapter
-      chapters.forEach(chapter => {
-        chapter.content = chapter.content
+      chapters.push({
+        title,
+        content: cleaned.slice(startPos, endPos)
           .replace(/^\s*\n/, '')
           .replace(/\s*\n$/, '')
-          .replace(/\n{3,}/g, '\n\n');
       });
       
-      // Write cleaned JSON
-      await fs.writeJson(outputFile, { 
-        metadata: {
-          originalFile: file,
-          processedAt: new Date().toISOString(),
-          encoding: 'UTF-8'
-        },
-        chapters 
-      }, { spaces: 2 });
-      
-      console.log(`Successfully processed ${file} → ${path.basename(outputFile)}`);
-      
-    } catch (error) {
-      console.error(`Error processing ${file}:`, error.message);
+      if (nextMatch) chapterRegex.lastIndex = nextMatch.index;
+    }
+
+    return {
+      metadata: {
+        sourceFile: path.basename(filePath),
+        encoding: 'UTF-8',
+        processedAt: new Date().toISOString(),
+        chapterCount: chapters.length
+      },
+      chapters: chapters.length > 0 ? chapters : [{ title: 'Full Text', content: cleaned }]
+    };
+  } catch (error) {
+    return {
+      error: error.message,
+      file: path.basename(filePath),
+      stack: error.stack
+    };
+  }
+}
+
+/**
+ * Extracts and processes ZIP archives
+ */
+async function processZipArchive(zipPath) {
+  const extractDir = path.join(CONFIG.tempDir, path.basename(zipPath, '.zip'));
+  await fs.ensureDir(extractDir);
+
+  try {
+    console.log(`Extracting ${path.basename(zipPath)}...`);
+    await fs.pipeline(
+      fs.createReadStream(zipPath),
+      unzipper.Extract({ path: extractDir })
+    ).promise();
+
+    const extractedFiles = (await fs.readdir(extractDir))
+      .filter(f => ['.txt', '.json'].includes(path.extname(f).toLowerCase()));
+    
+    const results = [];
+    for (const file of extractedFiles) {
+      const result = await processNovelFile(path.join(extractDir, file));
+      results.push(result);
+    }
+    
+    return results;
+  } finally {
+    if (CONFIG.cleanTemp) {
+      await fs.remove(extractDir);
     }
   }
 }
 
-// Helper function to detect encoding issues
-function containsMalformedUTF8(text) {
+// ======================
+// UTILITIES
+// ======================
+function containsMalformedText(text) {
   return /�/.test(text) || 
-         (/[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text));
+        (/[^\x00-\x7F]/.test(text) && !/[一-龯]/.test(text));
 }
 
-// Main execution
+async function ensureDirectories() {
+  await Promise.all([
+    fs.ensureDir(CONFIG.inputDir),
+    fs.ensureDir(CONFIG.outputDir),
+    fs.ensureDir(CONFIG.tempDir)
+  ]);
+}
+
+// ======================
+// MAIN EXECUTION
+// ======================
 async function main() {
-  await checkDependencies();
-  const dataDir = path.join(__dirname, 'data');
-  const resultDir = path.join(__dirname, 'result');
-  
-  await fs.ensureDir(dataDir);
-  await fs.ensureDir(resultDir);
-  
-  const files = (await fs.readdir(dataDir))
-    .filter(file => ['.txt', '.json'].includes(path.extname(file).toLowerCase()));
-  
-  if (files.length === 0) {
-    console.log('No files found in data directory');
-    return;
+  try {
+    await ensureDirectories();
+    
+    // Process ZIP files first
+    const zipFiles = (await fs.readdir(CONFIG.inputDir))
+      .filter(f => f.endsWith('.zip'));
+    
+    for (const zipFile of zipFiles) {
+      const results = await processZipArchive(path.join(CONFIG.inputDir, zipFile));
+      
+      for (const result of results) {
+        if (result.error) {
+          console.error(`Error processing file from ${zipFile}:`, result.error);
+          continue;
+        }
+        
+        const outputFile = path.join(
+          CONFIG.outputDir,
+          `${path.basename(result.metadata.sourceFile, path.extname(result.metadata.sourceFile))}_cleaned.json`
+        );
+        
+        await fs.writeJson(outputFile, result, { spaces: 2 });
+        console.log(`Processed ${result.metadata.sourceFile} → ${path.basename(outputFile)}`);
+      }
+    }
+    
+    // Process standalone files
+    const standaloneFiles = (await fs.readdir(CONFIG.inputDir))
+      .filter(f => ['.txt', '.json'].includes(path.extname(f).toLowerCase()))
+      .filter(f => !f.endsWith('.zip'));
+    
+    for (const file of standaloneFiles) {
+      const result = await processNovelFile(path.join(CONFIG.inputDir, file));
+      
+      if (result.error) {
+        console.error(`Error processing ${file}:`, result.error);
+        continue;
+      }
+      
+      const outputFile = path.join(
+        CONFIG.outputDir,
+        `${path.basename(file, path.extname(file))}_cleaned.json`
+      );
+      
+      await fs.writeJson(outputFile, result, { spaces: 2 });
+      console.log(`Processed ${file} → ${path.basename(outputFile)}`);
+    }
+    
+    console.log('Processing complete!');
+  } catch (error) {
+    console.error('Fatal error:', error);
+    process.exit(1);
+  } finally {
+    if (CONFIG.cleanTemp) {
+      await fs.remove(CONFIG.tempDir).catch(() => {});
+    }
   }
-  
-  await processFileSet(files, dataDir, resultDir);
 }
 
-main().catch(console.error);
+// ======================
+// INITIALIZATION
+// ======================
+async function installDependencies() {
+  const required = ['unzipper', 'iconv-lite', 'chardet'];
+  for (const pkg of required) {
+    try {
+      require.resolve(pkg);
+    } catch {
+      console.log(`Installing ${pkg}...`);
+      const { execSync } = require('child_process');
+      execSync(`npm install ${pkg}`, { stdio: 'inherit' });
+    }
+  }
+}
+
+installDependencies().then(main);
